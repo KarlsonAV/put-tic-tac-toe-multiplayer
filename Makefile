@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -std=c++11
+CXXFLAGS = -Wall -pthread -std=c++11 
 
 server: server.cpp
 	$(CXX) $(CXXFLAGS) -o server server.cpp
