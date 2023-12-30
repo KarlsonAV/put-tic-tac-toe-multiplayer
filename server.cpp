@@ -27,7 +27,7 @@
 #define WIN_MOVE '2'
 #define LOSE_MOVE '3'
 #define DRAW_MOVE '4'
-#define DISCONNECTED '8'
+#define DISCONNECTED_MOVE '8'
 
 
 int serverSocket;
@@ -41,9 +41,9 @@ void signalHandler(int signum) {
 enum GameStatus {
     EMPTY,
     FINISHED,
-    DISCONNECT,
     WAITING,
-    ONGOING
+    ONGOING,
+    DISCONNECTED
 };
 
 enum MoveStatus {
@@ -228,10 +228,16 @@ public:
         }
         return 1;
     }
+
+    void Delete(int idx) {
+        delete games[idx];
+        games[idx] = nullptr;
+    }
 };
 
 
 Games games;
+pthread_mutex_t mutexArray[MAX_GAMES];
 
 bool extractRowAndColumn(const char* input, int& row, int& column) {
     std::istringstream iss(input);
@@ -270,7 +276,7 @@ void* clientThread(void* arg) {
     memset(&server_buff, 0, sizeof(server_buff));
     memset(&client_buff, 0, sizeof(client_buff));
 
-    while ((n = recv(clientSocket, client_buff, sizeof(client_buff), 0)) > 0) {
+    while (games.games[gameId] != nullptr && (n = recv(clientSocket, client_buff, sizeof(client_buff), 0)) > 0) {
         validRowAndColumn = extractRowAndColumn(client_buff, row, column);
 
         // First player move
@@ -304,6 +310,7 @@ void* clientThread(void* arg) {
                 }
                 
                 else if (moveStatus == WIN) {
+                    game -> state = FINISHED;
                     server_buff[0] = WIN_MOVE;
 
                     // send to the first player
@@ -312,10 +319,11 @@ void* clientThread(void* arg) {
                     // send to the second player
                     server_buff[0] = LOSE_MOVE;
                     server_buff[2] = SIDE_O;
-                    write(game -> second_player_socket, server_buff, strlen(server_buff)); 
+                    write(game -> second_player_socket, server_buff, strlen(server_buff));
                 }
 
                 else if (moveStatus == DRAW) {
+                    game -> state = FINISHED;
                     server_buff[0] = DRAW_MOVE;
 
                     // send to the first player
@@ -323,7 +331,7 @@ void* clientThread(void* arg) {
                     
                     // send to the second player
                     server_buff[2] = SIDE_O;
-                    write(game -> second_player_socket, server_buff, strlen(server_buff)); 
+                    write(game -> second_player_socket, server_buff, strlen(server_buff));
                 }
 
             }
@@ -360,17 +368,21 @@ void* clientThread(void* arg) {
                 }
 
                 else if (moveStatus == WIN) {
+                    game -> state = FINISHED;
                     server_buff[0] = WIN_MOVE;
+
                     // send to the second player
                     write(clientSocket, server_buff, strlen(server_buff)); 
                     
                     // send to the first player
                     server_buff[0] = LOSE_MOVE;
                     server_buff[2] = SIDE_X;
-                    write(game -> first_player_socket, server_buff, strlen(server_buff)); 
+                    write(game -> first_player_socket, server_buff, strlen(server_buff));
+                    
                 }
 
                 else if (moveStatus == DRAW) {
+                    game -> state = FINISHED;
                     server_buff[0] = DRAW_MOVE;
 
                     // send to the second player
@@ -385,37 +397,76 @@ void* clientThread(void* arg) {
 
         memset(&server_buff, 0, sizeof(server_buff));
         memset(&client_buff, 0, sizeof(client_buff));
+
+        if (game -> state == FINISHED && (games.games[gameId] != nullptr)) {
+            games.Delete(gameId);
+            std::cout << "Game " << gameId << " has finished." << std::endl;
+            break;
+        }
     }
 
-    std::cout << "Exit client Thread" << std::endl;
+    if (game -> state == DISCONNECTED) {
+        games.Delete(gameId);
+    }
+    
+    // Handle disconnection
+    if (game -> state == ONGOING) {
+        game -> state = DISCONNECTED;
+        int opponentPlayer;
+        if (clientSocket == game -> first_player_socket) {
+            opponentPlayer = game -> second_player_socket;
+            server_buff[0] = DISCONNECTED_MOVE;
+            server_buff[1] = SECOND_PLAYER_MOVE;
+            server_buff[2] = SIDE_O;
+        }
+        else {
+            opponentPlayer = game -> first_player_socket;
+            server_buff[0] = DISCONNECTED_MOVE;
+            server_buff[1] = FIRST_PLAYER_MOVE;
+            server_buff[2] = SIDE_X;
+        }
+
+        encoded_board = game -> EncodeBoard();
+        for (int i = 0; i < encoded_board.size(); i++) {
+            server_buff[i+3] = encoded_board[i];
+        }
+        write(opponentPlayer, server_buff, strlen(server_buff));
+    }
+
+    std::cout << "Client " << clientSocket << " exit Thread." << std::endl;
+    close(clientSocket);
     pthread_exit(NULL);
 }
 
 
 void handleConnection(int clientSocket) {
     pthread_t thread_id;
-    int i = games.Find(clientSocket);
+    int i = -1;
+    
+    while (i < 0) {
+        i = games.Find(clientSocket);
+        if (i >= 0) {
+            if (games.games[i] -> first_player_socket < 0) {
+                games.games[i] -> first_player_socket = clientSocket;
+                games.games[i] -> state = WAITING;
+            }
+            else if (games.games[i] -> first_player_socket > 0) {
+                games.games[i] -> second_player_socket = clientSocket;
+                games.games[i] -> state = ONGOING;
+            }
 
-    if (i >= 0) {
-        if (games.games[i] -> first_player_socket < 0) {
-            games.games[i] -> first_player_socket = clientSocket;
-            games.games[i] -> state = WAITING;
+            int args[2] = {clientSocket, i};
+
+            if( pthread_create(&thread_id, NULL, clientThread, (void*) args) != 0 )
+            printf("Failed to create thread\n");
+
+            pthread_detach(thread_id);
+        } 
+        else {
+            usleep(1000);
         }
-        else if (games.games[i] -> first_player_socket > 0) {
-            games.games[i] -> second_player_socket = clientSocket;
-            games.games[i] -> state = ONGOING;
-        }
-
-        int args[2] = {clientSocket, i};
-
-        if( pthread_create(&thread_id, NULL, clientThread, (void*) args) != 0 )
-        printf("Failed to create thread\n");
-
-        pthread_detach(thread_id);
-    } 
-    else {
-        std::cout << "All games are full" << std::endl;
     }
+    
 }
 
 
