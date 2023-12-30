@@ -40,7 +40,13 @@ void signalHandler(int signum) {
 
 enum GameStatus {
     EMPTY,
+    FINISHED,
+    DISCONNECT,
     WAITING,
+    ONGOING
+};
+
+enum MoveStatus {
     CONTINUE,
     WIN,
     DRAW,
@@ -125,7 +131,7 @@ public:
         currentPlayer = (currentPlayer == 'X') ? 'O' : 'X';
     }
 
-    GameStatus makeMove(int row, int col) {
+    MoveStatus makeMove(int row, int col) {
         if (isValidMove(row, col)) {
             board[row - 1][col - 1] = currentPlayer;
             if (checkWin()) {
@@ -260,7 +266,7 @@ void* clientThread(void* arg) {
     write(clientSocket, server_buff, strlen(server_buff));
     int row, column;
     bool validRowAndColumn;
-    GameStatus moveStatus;
+    MoveStatus moveStatus;
     memset(&server_buff, 0, sizeof(server_buff));
     memset(&client_buff, 0, sizeof(client_buff));
 
@@ -309,6 +315,17 @@ void* clientThread(void* arg) {
                     write(game -> second_player_socket, server_buff, strlen(server_buff)); 
                 }
 
+                else if (moveStatus == DRAW) {
+                    server_buff[0] = DRAW_MOVE;
+
+                    // send to the first player
+                    write(clientSocket, server_buff, strlen(server_buff)); 
+                    
+                    // send to the second player
+                    server_buff[2] = SIDE_O;
+                    write(game -> second_player_socket, server_buff, strlen(server_buff)); 
+                }
+
             }
         }
 
@@ -352,7 +369,17 @@ void* clientThread(void* arg) {
                     server_buff[2] = SIDE_X;
                     write(game -> first_player_socket, server_buff, strlen(server_buff)); 
                 }
-                
+
+                else if (moveStatus == DRAW) {
+                    server_buff[0] = DRAW_MOVE;
+
+                    // send to the second player
+                    write(clientSocket, server_buff, strlen(server_buff)); 
+                    
+                    // send to the first player
+                    server_buff[2] = SIDE_X;
+                    write(game -> first_player_socket, server_buff, strlen(server_buff)); 
+                }
             }
         }
 
@@ -376,7 +403,7 @@ void handleConnection(int clientSocket) {
         }
         else if (games.games[i] -> first_player_socket > 0) {
             games.games[i] -> second_player_socket = clientSocket;
-            games.games[i] -> state = CONTINUE;
+            games.games[i] -> state = ONGOING;
         }
 
         int args[2] = {clientSocket, i};
