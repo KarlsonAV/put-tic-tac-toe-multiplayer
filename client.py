@@ -1,7 +1,7 @@
 import socket
 
 HOST = "127.0.0.1"
-PORT = 1235
+PORT = 1234
 
 def display_board(encoded_board: list) -> None:
     print("  1 2 3 4")
