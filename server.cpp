@@ -33,9 +33,9 @@
 int serverSocket;
 
 void signalHandler(int signum) {
-    std::cout << "Received signal " << signum << ". Closing server socket.\n";
+    std::cout << "\nReceived signal " << signum << ". Closing server socket.\n";
     close(serverSocket);
-    exit(signum);
+    exit(0);
 }
 
 enum GameStatus {
@@ -76,18 +76,6 @@ public:
         second_player_socket = -1;
         state = EMPTY;
         initializeBoard();
-    }
-
-    void displayBoard() const {
-        std::cout << "  1 2 3 4\n";
-        for (int i = 0; i < 4; ++i) {
-            std::cout << i + 1 << " ";
-            for (int j = 0; j < 4; ++j) {
-                std::cout << board[i][j] << " ";
-            }
-            std::cout << "\n";
-        }
-        std::cout << "\n";
     }
 
     bool isValidMove(int row, int col) const {
@@ -237,167 +225,119 @@ public:
 
 
 Games games;
-pthread_mutex_t mutexArray[MAX_GAMES];
 
 bool extractRowAndColumn(const char* input, int& row, int& column) {
+    if (strlen(input) < 3) return false;
+
     std::istringstream iss(input);
     return (iss >> row >> column) ? true : false;
+}
+
+void sendMoveResult(int socket, char result, char playerMove, char playerSide, Game* game) {
+    char buffer[256];
+    memset(buffer, 0, sizeof(buffer));
+
+    buffer[0] = result;
+    buffer[1] = playerMove;
+    buffer[2] = playerSide;
+
+    // Copy encoded board to buffer
+    std::string encodedBoard = game->EncodeBoard();
+
+    for (int i = 0; i < encodedBoard.size(); i++) {
+        buffer[i + 3] = encodedBoard[i];
+    }
+
+    write(socket, buffer, strlen(buffer));
 }
 
 void* clientThread(void* arg) {
     int* args = (int*) arg;
     int clientSocket = args[0];
     int gameId = args[1];
+    delete[] args;
+
     Game *game = games.games[gameId];
-    std::string encoded_board;
-    std::cout << clientSocket << ' ' << gameId << std::endl;
-    char server_buff[256];
+    std::cout << "Player " << clientSocket << " Joins game " << gameId << std::endl;
+    
     char client_buff[256];
     int n;
 
     // wait until game begins
     while (game -> state == WAITING) continue;
 
-    encoded_board = game -> EncodeBoard();
-    server_buff[0] = VALID_MOVE;
-    server_buff[1] = FIRST_PLAYER_MOVE;
-    server_buff[2] = (game->first_player_socket == clientSocket) ? SIDE_X : SIDE_O;
-
-    // write encoded board to the server buffer
-    for (int i = 0; i < encoded_board.size(); i++) {
-            server_buff[i+3] = encoded_board[i];
-        }
-    
     // send initial game info
-    write(clientSocket, server_buff, strlen(server_buff));
+    sendMoveResult(clientSocket, VALID_MOVE, FIRST_PLAYER_MOVE, (game->first_player_socket == clientSocket) ? SIDE_X : SIDE_O, game);
+   
     int row, column;
     bool validRowAndColumn;
     MoveStatus moveStatus;
-    memset(&server_buff, 0, sizeof(server_buff));
+
     memset(&client_buff, 0, sizeof(client_buff));
 
     while (games.games[gameId] != nullptr && (n = recv(clientSocket, client_buff, sizeof(client_buff), 0)) > 0) {
         validRowAndColumn = extractRowAndColumn(client_buff, row, column);
 
-        // First player move
         if (game -> first_player_socket == clientSocket) {
             if (validRowAndColumn) {
-                server_buff[1] = FIRST_PLAYER_MOVE;
-                server_buff[2] = SIDE_X;
                 moveStatus = game -> makeMove(row, column);
-                encoded_board = game -> EncodeBoard();
-                
-                for (int i = 0; i < encoded_board.size(); i++) {
-                        server_buff[i+3] = encoded_board[i];
-                    }
-                
-                if (moveStatus == INVALID) {
-                    server_buff[0] = INVALID_MOVE;
 
-                    write(clientSocket, server_buff, strlen(server_buff));
+                if (moveStatus == INVALID) {
+                    sendMoveResult(clientSocket, INVALID_MOVE, FIRST_PLAYER_MOVE, SIDE_X, game);
                 }
 
                 else if (moveStatus == CONTINUE) {
-                    server_buff[0] = VALID_MOVE;
-
-                    // send to the first player
-                    server_buff[1] = SECOND_PLAYER_MOVE;
-                    write(clientSocket, server_buff, strlen(server_buff)); 
-                    
-                    // send to the second player
-                    server_buff[2] = SIDE_O;
-                    write(game -> second_player_socket, server_buff, strlen(server_buff)); 
+                    sendMoveResult(clientSocket, VALID_MOVE, SECOND_PLAYER_MOVE, SIDE_X, game);
+                    sendMoveResult(game -> second_player_socket, VALID_MOVE, SECOND_PLAYER_MOVE, SIDE_O, game);
                 }
                 
                 else if (moveStatus == WIN) {
                     game -> state = FINISHED;
-                    server_buff[0] = WIN_MOVE;
-
-                    // send to the first player
-                    write(clientSocket, server_buff, strlen(server_buff)); 
-                    
-                    // send to the second player
-                    server_buff[0] = LOSE_MOVE;
-                    server_buff[2] = SIDE_O;
-                    write(game -> second_player_socket, server_buff, strlen(server_buff));
+                    sendMoveResult(clientSocket, WIN_MOVE, SECOND_PLAYER_MOVE, SIDE_X, game);
+                    sendMoveResult(game -> second_player_socket, LOSE_MOVE, SECOND_PLAYER_MOVE, SIDE_O, game);
                 }
 
                 else if (moveStatus == DRAW) {
                     game -> state = FINISHED;
-                    server_buff[0] = DRAW_MOVE;
-
-                    // send to the first player
-                    write(clientSocket, server_buff, strlen(server_buff)); 
-                    
-                    // send to the second player
-                    server_buff[2] = SIDE_O;
-                    write(game -> second_player_socket, server_buff, strlen(server_buff));
+                    sendMoveResult(clientSocket, DRAW_MOVE, SECOND_PLAYER_MOVE, SIDE_X, game);
+                    sendMoveResult(game -> second_player_socket, DRAW_MOVE, SECOND_PLAYER_MOVE, SIDE_O, game);
                 }
-
+            }
+            else {
+                sendMoveResult(clientSocket, INVALID_MOVE, FIRST_PLAYER_MOVE, SIDE_X, game);
             }
         }
 
-        // Second player move
         else if (game -> second_player_socket == clientSocket) {
             if (validRowAndColumn) {
-                server_buff[1] = SECOND_PLAYER_MOVE;
-                server_buff[2] = SIDE_O;
                 moveStatus = game -> makeMove(row, column);
-                encoded_board = game -> EncodeBoard();
-                
-                for (int i = 0; i < encoded_board.size(); i++) {
-                        server_buff[i+3] = encoded_board[i];
-                    }
                 
                 if (moveStatus == INVALID) {
-                    server_buff[0] = INVALID_MOVE;
-
-                    write(clientSocket, server_buff, strlen(server_buff));
+                    sendMoveResult(clientSocket, INVALID_MOVE, SECOND_PLAYER_MOVE, SIDE_O, game);
                 }
 
                 else if (moveStatus == CONTINUE) {
-                    server_buff[0] = VALID_MOVE;
-
-                    // send to the second player
-                    server_buff[1] = FIRST_PLAYER_MOVE;
-                    write(clientSocket, server_buff, strlen(server_buff)); 
-                    
-                    // send to the first player
-                    server_buff[2] = SIDE_X;
-                    write(game -> first_player_socket, server_buff, strlen(server_buff)); 
+                    sendMoveResult(clientSocket, VALID_MOVE, FIRST_PLAYER_MOVE, SIDE_O, game);
+                    sendMoveResult(game -> first_player_socket, VALID_MOVE, FIRST_PLAYER_MOVE, SIDE_X, game);
                 }
 
                 else if (moveStatus == WIN) {
                     game -> state = FINISHED;
-                    server_buff[0] = WIN_MOVE;
-
-                    // send to the second player
-                    write(clientSocket, server_buff, strlen(server_buff)); 
-                    
-                    // send to the first player
-                    server_buff[0] = LOSE_MOVE;
-                    server_buff[2] = SIDE_X;
-                    write(game -> first_player_socket, server_buff, strlen(server_buff));
-                    
+                    sendMoveResult(clientSocket, WIN_MOVE, FIRST_PLAYER_MOVE, SIDE_O, game);
+                    sendMoveResult(game -> first_player_socket, LOSE_MOVE, FIRST_PLAYER_MOVE, SIDE_X, game);
                 }
 
                 else if (moveStatus == DRAW) {
                     game -> state = FINISHED;
-                    server_buff[0] = DRAW_MOVE;
-
-                    // send to the second player
-                    write(clientSocket, server_buff, strlen(server_buff)); 
-                    
-                    // send to the first player
-                    server_buff[2] = SIDE_X;
-                    write(game -> first_player_socket, server_buff, strlen(server_buff)); 
+                    sendMoveResult(clientSocket, DRAW_MOVE, FIRST_PLAYER_MOVE, SIDE_O, game);
+                    sendMoveResult(game -> first_player_socket, DRAW_MOVE, FIRST_PLAYER_MOVE, SIDE_X, game);
                 }
             }
+            else {
+                sendMoveResult(clientSocket, INVALID_MOVE, SECOND_PLAYER_MOVE, SIDE_O, game);
+            }
         }
-
-        memset(&server_buff, 0, sizeof(server_buff));
         memset(&client_buff, 0, sizeof(client_buff));
-
         if (game -> state == FINISHED && (games.games[gameId] != nullptr)) {
             games.Delete(gameId);
             std::cout << "Game " << gameId << " has finished." << std::endl;
@@ -405,32 +345,26 @@ void* clientThread(void* arg) {
         }
     }
 
+    // Delete game if opponent disconnected
     if (game -> state == DISCONNECTED) {
         games.Delete(gameId);
+        std::cout << "Game " << gameId << " has finished due to Disconnection." << std::endl;
     }
     
     // Handle disconnection
-    if (game -> state == ONGOING) {
+    else if (game -> state == ONGOING) {
         game -> state = DISCONNECTED;
         int opponentPlayer;
+
         if (clientSocket == game -> first_player_socket) {
             opponentPlayer = game -> second_player_socket;
-            server_buff[0] = DISCONNECTED_MOVE;
-            server_buff[1] = SECOND_PLAYER_MOVE;
-            server_buff[2] = SIDE_O;
+            sendMoveResult(opponentPlayer, DISCONNECTED_MOVE, SECOND_PLAYER_MOVE, SIDE_O, game);
+
         }
         else {
             opponentPlayer = game -> first_player_socket;
-            server_buff[0] = DISCONNECTED_MOVE;
-            server_buff[1] = FIRST_PLAYER_MOVE;
-            server_buff[2] = SIDE_X;
+            sendMoveResult(opponentPlayer, DISCONNECTED_MOVE, FIRST_PLAYER_MOVE, SIDE_X, game);
         }
-
-        encoded_board = game -> EncodeBoard();
-        for (int i = 0; i < encoded_board.size(); i++) {
-            server_buff[i+3] = encoded_board[i];
-        }
-        write(opponentPlayer, server_buff, strlen(server_buff));
     }
 
     std::cout << "Client " << clientSocket << " exit Thread." << std::endl;
@@ -455,15 +389,19 @@ void handleConnection(int clientSocket) {
                 games.games[i] -> state = ONGOING;
             }
 
-            int args[2] = {clientSocket, i};
+            int* args = new int[2];
+            args[0] = clientSocket;
+            args[1] = i;
 
-            if( pthread_create(&thread_id, NULL, clientThread, (void*) args) != 0 )
-            printf("Failed to create thread\n");
-
+            if( pthread_create(&thread_id, NULL, clientThread, (void*) args) != 0 ) {
+                std::cout << "Failed to create thread" << std::endl;
+                delete[] args;
+            }
+            
             pthread_detach(thread_id);
         } 
         else {
-            usleep(1000);
+            usleep(2000);
         }
     }
     
@@ -498,11 +436,11 @@ int main() {
     bind(serverSocket, (struct sockaddr *) &serverAddr, sizeof(serverAddr));
 
     //Listen on the socket
-    if (listen(serverSocket, 10) == 0) {
-        printf("Listening\n");
+    if (listen(serverSocket, MAX_GAMES * 2 + 2) == 0) {
+        std::cout << "Listening" << std::endl;
     }
     else {
-        printf("Error\n");
+        std::cout << "Error" << std::endl;
         return 1;
     }
 
