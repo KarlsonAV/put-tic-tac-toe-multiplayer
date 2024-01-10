@@ -5,6 +5,7 @@
 #include <netinet/in.h>
 #include <string>
 #include <sstream>
+#include <cstring>
 #include <arpa/inet.h>
 #include <fcntl.h> // for open
 #include <unistd.h> // for close
